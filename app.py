@@ -20,7 +20,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS for finance theme
 st.markdown("""
 <style>
     .main-header {
@@ -33,14 +32,6 @@ st.markdown("""
         font-size: 1rem;
         color: #5D6D7E;
         margin-bottom: 2rem;
-    }
-    .company-badge {
-        background-color: #1B4F72;
-        color: white;
-        padding: 4px 12px;
-        border-radius: 12px;
-        font-size: 0.8rem;
-        margin-right: 8px;
     }
     .source-box {
         background-color: #EBF5FB;
@@ -56,8 +47,22 @@ st.markdown("""
 st.markdown('<p class="main-header">FinSight AI</p>', unsafe_allow_html=True)
 st.markdown('<p class="sub-header">Financial Document Intelligence Platform — Powered by RAG + Llama 3</p>', unsafe_allow_html=True)
 
-# Sidebar
 with st.sidebar:
+    st.markdown("### LLM Provider")
+    provider = st.selectbox(
+        "Select LLM Provider",
+        ["Groq (Free & Fast)", "OpenAI", "Ollama (Local)"]
+    )
+
+    if provider == "Groq (Free & Fast)":
+        st.success("Using Groq — Llama 3.3 70B")
+    elif provider == "OpenAI":
+        openai_key = st.text_input("Enter OpenAI API Key", type="password")
+        st.info("Using OpenAI — GPT-4o")
+    elif provider == "Ollama (Local)":
+        st.info("Using Ollama — runs locally, no API key needed")
+
+    st.markdown("---")
     st.markdown("### Available Filings")
     st.markdown("""
     | Company | Year | Type |
@@ -66,7 +71,7 @@ with st.sidebar:
     | Apple   | 2022 | 10-K |
     | Amazon  | 2023 | 10-K |
     """)
-    
+
     st.markdown("---")
     st.markdown("### Suggested Questions")
     questions = [
@@ -83,12 +88,31 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("### About")
-    st.markdown("FinSight AI analyzes SEC 10-K filings from Apple and Amazon using Retrieval Augmented Generation.")
+    st.markdown("FinSight AI analyzes SEC 10-K filings using Retrieval Augmented Generation.")
     st.markdown("**Stack:** LangChain · FAISS · Llama 3.3 70B · HuggingFace")
+
+def get_llm(provider):
+    if provider == "Groq (Free & Fast)":
+        return ChatGroq(
+            model="llama-3.3-70b-versatile",
+            temperature=0.1,
+            groq_api_key=st.secrets["GROQ_API_KEY"]
+        )
+    elif provider == "OpenAI":
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model="gpt-4o",
+            temperature=0.1,
+            openai_api_key=openai_key
+        )
+    elif provider == "Ollama (Local)":
+        from langchain_ollama import ChatOllama
+        return ChatOllama(model="llama3", temperature=0.1)
 
 def extract_clean_text(html_content):
     soup = BeautifulSoup(html_content, "html.parser")
-    for tag in soup(["script", "style", "ix:header", "ix:nonfraction", "ix:nonnumeric", "xbrl", "head"]):
+    for tag in soup(["script", "style", "ix:header", "ix:nonfraction",
+                     "ix:nonnumeric", "xbrl", "head"]):
         tag.decompose()
     text = soup.get_text(separator=" ")
     text = re.sub(r"http\S+", "", text)
@@ -138,9 +162,10 @@ def build_pipeline():
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     vectorstore = FAISS.from_documents(chunks, embeddings)
     retriever = vectorstore.as_retriever(search_kwargs={"k": 8})
+    return vectorstore, retriever
 
-    groq_api_key = st.secrets["GROQ_API_KEY"]
-    llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.1, groq_api_key=groq_api_key)
+def build_chain(vectorstore, retriever, provider):
+    llm = get_llm(provider)
 
     prompt = ChatPromptTemplate.from_template("""
 You are FinSight AI, an expert financial document analyst.
@@ -168,30 +193,30 @@ Analysis:""")
         | llm
         | StrOutputParser()
     )
+    return rag_chain
 
-    return rag_chain, retriever
-
-# Build pipeline
+# Build vector store once
 with st.spinner("Loading SEC filings and building RAG pipeline... (takes 2-3 mins on first load)"):
-    rag_chain, retriever = build_pipeline()
+    vectorstore, retriever = build_pipeline()
 
+# Build chain based on selected provider
+if provider == "OpenAI" and not openai_key:
+    st.warning("Please enter your OpenAI API key in the sidebar.")
+    st.stop()
+
+rag_chain = build_chain(vectorstore, retriever, provider)
 st.success("FinSight AI is ready. Ask any question about Apple or Amazon filings.")
 
-# Chat history
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Display chat history
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if "sources" in msg:
             st.markdown('<div class="source-box">Sources: ' + " | ".join(msg["sources"]) + '</div>', unsafe_allow_html=True)
 
-# Handle suggested question from sidebar
 default_input = st.session_state.pop("suggested", "")
-
-# Chat input
 question = st.chat_input("Ask anything about Apple or Amazon financials...")
 
 if not question and default_input:
